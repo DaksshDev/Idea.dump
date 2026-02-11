@@ -34,7 +34,7 @@
   --input: 0 0% 20%;
   --ring: 0 0% 80%;
   
-  --radius: 0px; /* Brutalist - sharp corners */
+  --radius: 1.5rem; /* Soft rounded corners for minimalist-a vibe */
   
   --font-sans: 'Inter', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;

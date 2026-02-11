@@ -23,7 +23,7 @@ export function IdeaCard({ idea, index }: IdeaCardProps) {
         delay: index * 0.05,
         ease: [0.21, 0.47, 0.32, 0.98]
       }}
-      className="group relative bg-card hover:bg-secondary/40 border border-border/50 hover:border-border transition-all duration-300 p-6 flex flex-col justify-between h-full min-h-[180px]"
+      className="group relative bg-card hover:bg-secondary/40 border border-border/50 hover:border-border transition-all duration-300 p-6 flex flex-col justify-between h-full min-h-[180px] rounded-[var(--radius)]"
     >
       <p className="text-foreground/90 font-light text-lg whitespace-pre-wrap leading-relaxed font-sans">
         {idea.content}

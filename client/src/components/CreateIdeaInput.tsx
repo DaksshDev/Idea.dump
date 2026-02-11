@@ -3,7 +3,7 @@ import { useCreateIdea } from "@/hooks/use-ideas";
 import { ArrowUp } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
-export function CreateIdeaInput() {
+export function CreateIdeaInput({ onSuccess }: { onSuccess?: () => void }) {
   const [content, setContent] = useState("");
   const createIdea = useCreateIdea();
   const [isFocused, setIsFocused] = useState(false);
@@ -13,7 +13,10 @@ export function CreateIdeaInput() {
     if (!content.trim() || createIdea.isPending) return;
 
     createIdea.mutate({ content }, {
-      onSuccess: () => setContent("")
+      onSuccess: () => {
+        setContent("");
+        if (onSuccess) onSuccess();
+      }
     });
   };
 
@@ -25,7 +28,7 @@ export function CreateIdeaInput() {
   };
 
   return (
-    <div className="w-full max-w-2xl mx-auto mb-16 relative group">
+    <div className="w-full relative group">
       <form onSubmit={handleSubmit} className="relative">
         <textarea
           value={content}
@@ -33,9 +36,9 @@ export function CreateIdeaInput() {
           onKeyDown={handleKeyDown}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
-          placeholder="Type an idea..."
-          className="w-full bg-transparent text-xl md:text-2xl font-sans font-light placeholder:text-muted-foreground/30 border-none focus:ring-0 p-0 resize-none min-h-[60px] max-h-[200px] overflow-hidden leading-relaxed"
-          style={{ height: 'auto', minHeight: '60px' }}
+          placeholder="What's on your mind?"
+          className="w-full bg-transparent text-xl md:text-2xl font-sans font-light placeholder:text-muted-foreground/30 border-none focus:ring-0 p-0 resize-none min-h-[120px] max-h-[300px] overflow-hidden leading-relaxed"
+          style={{ height: 'auto', minHeight: '120px' }}
           rows={1}
           autoFocus
         />
