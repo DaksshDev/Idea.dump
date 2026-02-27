@@ -5,7 +5,7 @@ A simple app to capture and organize your ideas.
 ## Live Demo
 Check it out here: [Idea Dump](https://idea-dump.netlify.app/)
 
-![Showcase](.screenshots/showcase.png)
+![Showcase](screenshots/showcase.png)
 
 ## Features
 
