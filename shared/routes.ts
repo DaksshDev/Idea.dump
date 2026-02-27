@@ -32,6 +32,16 @@ export const api = {
         400: errorSchemas.validation,
       },
     },
+    update: {
+      method: 'PATCH' as const,
+      path: '/api/ideas/:id' as const,
+      input: insertIdeaSchema,
+      responses: {
+        200: z.custom<typeof ideas.$inferSelect>(),
+        400: errorSchemas.validation,
+        404: errorSchemas.notFound,
+      },
+    },
     delete: {
       method: 'DELETE' as const,
       path: '/api/ideas/:id' as const,
@@ -57,3 +67,4 @@ export function buildUrl(path: string, params?: Record<string, string | number>)
 
 export type IdeaInput = z.infer<typeof api.ideas.create.input>;
 export type IdeaResponse = z.infer<typeof api.ideas.create.responses[201]>;
+export type IdeaUpdateInput = z.infer<typeof api.ideas.update.input>;
