@@ -7,6 +7,18 @@ import {
   useDeleteGroup,
   useRenameGroup,
   useMoveIdeaToGroup,
+  fetchGitHubGists,
+  linkGist,
+  unlinkGist,
+  getLinkedGistId,
+  getAutosaveEnabled,
+  setAutosaveEnabled,
+  deleteRemoteGist,
+  resetAppData,
+  fetchGistDataById,
+  replaceAllData,
+  parseImportedIdeaDump,
+  type GitHubGistSummary,
 } from "@/hooks/use-ideas";
 import {
   Loader2,
@@ -16,6 +28,9 @@ import {
   FolderPlus,
   Pencil,
   Trash2,
+  Github,
+  ExternalLink,
+  Settings,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -35,9 +50,11 @@ import {
 } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useMemo, useState } from "react";
-import type { Idea } from "@/types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { Idea, IdeaDumpData } from "@/types";
 import type { DragEvent } from "react";
+import { useToast } from "@/hooks/use-toast";
+import { useQueryClient } from "@tanstack/react-query";
 
 export default function Home() {
   const { data, isLoading, isError } = useIdeas();
@@ -63,6 +80,40 @@ export default function Home() {
   const [openAccordions, setOpenAccordions] = useState<string[]>([]);
   const [draggedIdeaId, setDraggedIdeaId] = useState<number | null>(null);
   const [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
+  const [isGistDialogOpen, setIsGistDialogOpen] = useState(false);
+  const [gists, setGists] = useState<GitHubGistSummary[] | null>(null);
+  const [isLoadingGists, setIsLoadingGists] = useState(false);
+  const [gistError, setGistError] = useState<string | null>(null);
+  const [customGistInput, setCustomGistInput] = useState("");
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [remoteGistInput, setRemoteGistInput] = useState(() => {
+    const id = getLinkedGistId();
+    return id ? `https://gist.github.com/${id}` : "";
+  });
+  const [autosaveEnabled, setAutosaveEnabledState] = useState(() =>
+    getAutosaveEnabled()
+  );
+  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
+  const [isDeleteGistConfirmOpen, setIsDeleteGistConfirmOpen] = useState(false);
+  const [isCreateGistChoiceOpen, setIsCreateGistChoiceOpen] = useState(false);
+  const [isCreateGistDeleteConfirmOpen, setIsCreateGistDeleteConfirmOpen] =
+    useState(false);
+  const [isGistConflictOpen, setIsGistConflictOpen] = useState(false);
+  const [pendingGistId, setPendingGistId] = useState<string | null>(null);
+  const [pendingRemoteData, setPendingRemoteData] =
+    useState<IdeaDumpData | null>(null);
+  const [isResolvingGistChange, setIsResolvingGistChange] = useState(false);
+  const [isImportConfirmOpen, setIsImportConfirmOpen] = useState(false);
+  const [pendingImportData, setPendingImportData] =
+    useState<IdeaDumpData | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    const id = getLinkedGistId();
+    setRemoteGistInput(id ? `https://gist.github.com/${id}` : "");
+  }, [isLinked]);
 
   const sortedIdeas = useMemo(
     () =>
@@ -157,6 +208,251 @@ export default function Home() {
     );
   };
 
+  const openGistDialog = async () => {
+    setIsGistDialogOpen(true);
+    setGistError(null);
+    setIsLoadingGists(true);
+    try {
+      const list = await fetchGitHubGists();
+      setGists(list);
+    } catch (error: any) {
+      setGistError(error?.message ?? "Failed to load your GitHub gists.");
+    } finally {
+      setIsLoadingGists(false);
+    }
+  };
+
+  const handleSelectGist = (id: string) => {
+    linkGist(id);
+    setIsGistDialogOpen(false);
+    setGists(null);
+    setCustomGistInput("");
+    setGistError(null);
+    loadFromGist();
+  };
+
+  const parseGistIdFromInput = (value: string): string | null => {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    try {
+      const url = new URL(trimmed);
+      const parts = url.pathname.split("/").filter(Boolean);
+      const last = parts[parts.length - 1];
+      return last || null;
+    } catch {
+      return trimmed;
+    }
+  };
+
+  const handleLoadCustomGist = () => {
+    const id = parseGistIdFromInput(customGistInput);
+    if (!id) {
+      setGistError("Please enter a valid Gist URL or ID.");
+      return;
+    }
+    handleSelectGist(id);
+  };
+
+  const handleToggleAutosave = (value: boolean) => {
+    setAutosaveEnabled(value);
+    setAutosaveEnabledState(value);
+    toast({
+      title: value ? "Autosave enabled" : "Autosave disabled",
+      description: value
+        ? "Changes will be synced to your linked gist when possible."
+        : "Changes will stay local until you manually save.",
+    });
+  };
+
+  const parseGistIdFromUrlOrId = (value: string): string | null => {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    try {
+      const url = new URL(trimmed);
+      const parts = url.pathname.split("/").filter(Boolean);
+      const last = parts[parts.length - 1];
+      return last || null;
+    } catch {
+      return trimmed;
+    }
+  };
+
+  const handleApplyRemoteGist = async () => {
+    const trimmed = remoteGistInput.trim();
+    if (!trimmed) {
+      // Clear any linked gist and stay purely local; no error.
+      unlinkGist();
+      toast({
+        title: "Remote gist cleared",
+        description: "App will now only save locally until you link a gist again.",
+      });
+      return;
+    }
+
+    const id = parseGistIdFromUrlOrId(trimmed);
+    if (!id) {
+      toast({
+        title: "Invalid Gist",
+        description: "Please enter a valid Gist URL or ID.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const current = data ?? { ideas: [], groups: [] };
+    setIsResolvingGistChange(true);
+    try {
+      const remote = await fetchGistDataById(id, { interactive: true });
+      const currentJson = JSON.stringify(current);
+      const remoteJson = JSON.stringify(remote);
+
+      if (currentJson === remoteJson) {
+        linkGist(id);
+        toast({
+          title: "Gist linked",
+          description: "Remote gist matches your current data. Autosave is now active for it.",
+        });
+      } else {
+        setPendingGistId(id);
+        setPendingRemoteData(remote);
+        setIsGistConflictOpen(true);
+      }
+    } catch (error: any) {
+      toast({
+        title: "Gist error",
+        description: error?.message ?? "Failed to inspect the specified Gist.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsResolvingGistChange(false);
+    }
+  };
+
+  const handleResolveConflictKeepLocal = async () => {
+    if (!pendingGistId) return;
+    const current = data ?? { ideas: [], groups: [] };
+    try {
+      linkGist(pendingGistId);
+      await replaceAllData(current);
+      await queryClient.invalidateQueries({
+        queryKey: ["idea.dump.ideas"],
+      });
+      toast({
+        title: "Remote updated",
+        description: "Your local version has been saved over the remote gist.",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Sync error",
+        description:
+          error?.message ?? "Failed to overwrite the remote gist with your data.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsGistConflictOpen(false);
+      setPendingGistId(null);
+      setPendingRemoteData(null);
+    }
+  };
+
+  const handleResolveConflictUseRemote = async () => {
+    if (!pendingGistId || !pendingRemoteData) return;
+    try {
+      linkGist(pendingGistId);
+      await replaceAllData(pendingRemoteData);
+      await queryClient.invalidateQueries({
+        queryKey: ["idea.dump.ideas"],
+      });
+      toast({
+        title: "Loaded from remote gist",
+        description: "Your local data has been replaced with the remote gist.",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Sync error",
+        description:
+          error?.message ?? "Failed to apply data from the remote gist.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsGistConflictOpen(false);
+      setPendingGistId(null);
+      setPendingRemoteData(null);
+    }
+  };
+
+  const handleDownloadJson = () => {
+    const snapshot: IdeaDumpData = data ?? { ideas: [], groups: [] };
+    const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "idea-dump-backup.json";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleStartImportJson = () => {
+    setPendingImportData(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleFileInputChange: React.ChangeEventHandler<HTMLInputElement> = async (
+    event
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const parsed = parseImportedIdeaDump(text);
+      setPendingImportData(parsed);
+      setIsImportConfirmOpen(true);
+    } catch (error: any) {
+      toast({
+        title: "Import failed",
+        description:
+          error?.message ?? "The selected file is not a valid idea.dump backup.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleConfirmImport = async () => {
+    if (!pendingImportData) {
+      setIsImportConfirmOpen(false);
+      return;
+    }
+    try {
+      await replaceAllData(pendingImportData);
+      await queryClient.invalidateQueries({
+        queryKey: ["idea.dump.ideas"],
+      });
+      toast({
+        title: "Data imported",
+        description:
+          "Your ideas and groups have been replaced by the imported backup.",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Import failed",
+        description:
+          error?.message ?? "Failed to apply the imported backup to the app.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsImportConfirmOpen(false);
+      setPendingImportData(null);
+    }
+  };
+
   const startDragging = (
     ideaId: number,
     event: DragEvent<HTMLDivElement>
@@ -186,6 +482,17 @@ export default function Home() {
       <div className="fixed inset-0 bg-noise opacity-[0.03] z-50 pointer-events-none mix-blend-overlay"></div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 md:py-20 relative z-10">
+        <div className="absolute top-6 right-4 flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="rounded-full border border-border/40 hover:border-white/60"
+            onClick={() => setIsSettingsOpen(true)}
+            aria-label="Open settings"
+          >
+            <Settings className="w-4 h-4" />
+          </Button>
+        </div>
         <header className="mb-20 text-center">
           <motion.h1
             initial={{ opacity: 0, y: -20 }}
@@ -215,7 +522,13 @@ export default function Home() {
             <span>{isSavingToGist ? "Saving..." : "Save to GitHub Gist"}</span>
           </button>
           <button
-            onClick={() => loadFromGist()}
+            onClick={() => {
+              if (isLinked) {
+                loadFromGist();
+              } else {
+                void openGistDialog();
+              }
+            }}
             disabled={isLoadingFromGist}
             className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-border/40 hover:border-white/60 hover:text-foreground transition-colors"
           >
@@ -227,6 +540,500 @@ export default function Home() {
               Gist linked - autosave on
             </span>
           )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json"
+            className="hidden"
+            onChange={handleFileInputChange}
+          />
+          <Dialog open={isGistDialogOpen} onOpenChange={setIsGistDialogOpen}>
+            <DialogContent className="bg-background/95 backdrop-blur-xl border-border/50 max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Load from GitHub Gist</DialogTitle>
+                <DialogDescription>
+                  Sign in with GitHub, pick one of your gists, or paste any public
+                  Gist URL to load ideas from. Once selected, that gist will be
+                  linked for future auto-saves.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-mono text-muted-foreground/70">
+                    Your gists
+                  </p>
+                  <Button
+                    asChild
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs gap-1"
+                  >
+                    <a
+                      href="https://gist.github.com"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <Github className="w-3 h-3" />
+                      <span>Show on GitHub</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </Button>
+                </div>
+                <div className="h-40 overflow-y-auto rounded-md border border-border/40 p-2 text-sm">
+                  {isLoadingGists ? (
+                    <div className="flex items-center justify-center h-full gap-2 text-muted-foreground/70">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Loading your gists...</span>
+                    </div>
+                  ) : gistError ? (
+                    <p className="text-xs text-destructive whitespace-pre-line">
+                      {gistError}
+                    </p>
+                  ) : !gists || gists.length === 0 ? (
+                    <p className="text-xs text-muted-foreground/70">
+                      No gists found yet. Create one on GitHub or paste a Gist URL
+                      below.
+                    </p>
+                  ) : (
+                    <ul className="space-y-1">
+                      {gists.map((gist) => (
+                        <li key={gist.id}>
+                          <button
+                            type="button"
+                            onClick={() => handleSelectGist(gist.id)}
+                            className="w-full text-left px-2 py-1 rounded-md hover:bg-secondary/40 text-xs flex items-center justify-between gap-2"
+                          >
+                            <span className="truncate">
+                              {gist.description || "(no description)"}
+                            </span>
+                            <span className="shrink-0 text-[10px] font-mono text-muted-foreground/70">
+                              {gist.public ? "public" : "private"}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <p className="text-xs font-mono text-muted-foreground/70">
+                    Or paste any Gist URL / ID
+                  </p>
+                  <div className="flex gap-2">
+                    <Input
+                      value={customGistInput}
+                      onChange={(event) => setCustomGistInput(event.target.value)}
+                      placeholder="https://gist.github.com/you/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx or ID"
+                      className="flex-1"
+                    />
+                    <Button
+                      size="sm"
+                      type="button"
+                      onClick={handleLoadCustomGist}
+                      disabled={!customGistInput.trim()}
+                    >
+                      Load
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
+            <DialogContent className="bg-background/95 backdrop-blur-xl border-border/50 max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Settings</DialogTitle>
+                <DialogDescription>
+                  Configure sync, backup, and danger zone actions for idea.dump.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-6 py-2">
+                <section className="space-y-3">
+                  <p className="text-xs font-mono uppercase tracking-widest text-muted-foreground/70">
+                    Sync
+                  </p>
+                  <div className="space-y-2">
+                    <label className="text-xs font-mono text-muted-foreground/70">
+                      Remote Gist URL / ID
+                    </label>
+                    <div className="flex gap-2">
+                      <Input
+                        value={remoteGistInput}
+                        onChange={(event) =>
+                          setRemoteGistInput(event.target.value)
+                        }
+                        placeholder="https://gist.github.com/you/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx or ID"
+                        className="flex-1"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={handleApplyRemoteGist}
+                        disabled={isResolvingGistChange}
+                      >
+                        {isResolvingGistChange ? "Checking..." : "Apply"}
+                      </Button>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground/70">
+                      When you change the remote Gist, we’ll compare its contents
+                      with your current data and ask whether to keep your version
+                      or load the remote version if they differ.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-4 pt-2">
+                    <div>
+                      <p className="text-xs font-mono text-muted-foreground/80">
+                        Create new Gist from current data
+                      </p>
+                      <p className="text-[11px] text-muted-foreground/60">
+                        This will create a brand new private Gist with your current
+                        ideas and groups and use it for future autosaves.
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={isSavingToGist}
+                      onClick={() => {
+                        if (isLinked) {
+                          setIsCreateGistChoiceOpen(true);
+                        } else {
+                          unlinkGist();
+                          saveToGist();
+                        }
+                      }}
+                    >
+                      {isSavingToGist ? "Creating..." : "Create new Gist"}
+                    </Button>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-4 pt-2">
+                    <div>
+                      <p className="text-xs font-mono text-muted-foreground/80">
+                        Autosave to Gist
+                      </p>
+                      <p className="text-[11px] text-muted-foreground/60">
+                        When enabled, adding, editing, moving, or deleting ideas
+                        will sync to your linked Gist automatically.
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={autosaveEnabled ? "default" : "outline"}
+                      onClick={() => handleToggleAutosave(!autosaveEnabled)}
+                    >
+                      {autosaveEnabled ? "On" : "Off"}
+                    </Button>
+                  </div>
+                </section>
+
+                <section className="space-y-3">
+                  <p className="text-xs font-mono uppercase tracking-widest text-muted-foreground/70">
+                    Backup
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={handleDownloadJson}
+                    >
+                      Download JSON
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={handleStartImportJson}
+                    >
+                      Import JSON
+                    </Button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground/60">
+                    Use JSON backups if you ever want to migrate data or keep an
+                    offline copy.
+                  </p>
+                </section>
+
+                <section className="space-y-3">
+                  <p className="text-xs font-mono uppercase tracking-widest text-destructive/80">
+                    Danger Zone
+                  </p>
+                  <div className="space-y-2 space-x-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => setIsDeleteGistConfirmOpen(true)}
+                      disabled={!isLinked}
+                    >
+                      Delete Remote Gist
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => setIsResetConfirmOpen(true)}
+                    >
+                      Reset App Completely
+                    </Button>
+                    <p className="text-[11px] text-muted-foreground/70">
+                      These actions cannot be undone. You’ll be asked to confirm
+                      before anything is deleted.
+                    </p>
+                  </div>
+                </section>
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog
+            open={isCreateGistChoiceOpen}
+            onOpenChange={setIsCreateGistChoiceOpen}
+          >
+            <DialogContent className="bg-background/95 backdrop-blur-xl border-border/50 max-w-md">
+              <DialogHeader>
+                <DialogTitle>Gist already linked</DialogTitle>
+                <DialogDescription>
+                  You already have a remote Gist linked. Do you want to keep using
+                  it, or create a brand new one from your current data?
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter className="flex flex-col items-stretch gap-2 sm:flex-row sm:justify-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsCreateGistChoiceOpen(false)}
+                >
+                  Keep existing Gist
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={() => {
+                    setIsCreateGistChoiceOpen(false);
+                    setIsCreateGistDeleteConfirmOpen(true);
+                  }}
+                >
+                  Create new & delete old
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog
+            open={isCreateGistDeleteConfirmOpen}
+            onOpenChange={setIsCreateGistDeleteConfirmOpen}
+          >
+            <DialogContent className="bg-background/95 backdrop-blur-xl border-border/50 max-w-md">
+              <DialogHeader>
+                <DialogTitle>Delete old Gist and create new?</DialogTitle>
+                <DialogDescription>
+                  This will delete your currently linked GitHub Gist and create a
+                  new private Gist from your current ideas and groups. This cannot
+                  be undone.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsCreateGistDeleteConfirmOpen(false)}
+                >
+                  No, keep old
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  disabled={isSavingToGist}
+                  onClick={async () => {
+                    try {
+                      await deleteRemoteGist();
+                      unlinkGist();
+                      saveToGist();
+                      toast({
+                        title: "Created new Gist",
+                        description:
+                          "Old Gist deleted and a new one was created from current data.",
+                      });
+                    } catch (error: any) {
+                      toast({
+                        title: "Create new Gist failed",
+                        description:
+                          error?.message ??
+                          "Could not delete the old Gist and create a new one.",
+                        variant: "destructive",
+                      });
+                    } finally {
+                      setIsCreateGistDeleteConfirmOpen(false);
+                    }
+                  }}
+                >
+                  Yes, delete old & create new
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={isResetConfirmOpen} onOpenChange={setIsResetConfirmOpen}>
+            <DialogContent className="bg-background/95 backdrop-blur-xl border-border/50 max-w-md">
+              <DialogHeader>
+                <DialogTitle>Reset app completely?</DialogTitle>
+                <DialogDescription>
+                  This will clear all local ideas, groups, settings, and unlink any
+                  Gist. Your remote Gist (if any) will not be touched.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsResetConfirmOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={async () => {
+                    resetAppData();
+                    await queryClient.invalidateQueries({
+                      queryKey: ["idea.dump.ideas"],
+                    });
+                    setIsResetConfirmOpen(false);
+                    toast({
+                      title: "App reset",
+                      description:
+                        "All local data has been cleared. A fresh workspace has been created.",
+                    });
+                  }}
+                >
+                  Reset App
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog
+            open={isDeleteGistConfirmOpen}
+            onOpenChange={setIsDeleteGistConfirmOpen}
+          >
+            <DialogContent className="bg-background/95 backdrop-blur-xl border-border/50 max-w-md">
+              <DialogHeader>
+                <DialogTitle>Delete remote Gist?</DialogTitle>
+                <DialogDescription>
+                  This will permanently delete the linked GitHub Gist from your
+                  account. Your local ideas will remain intact.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsDeleteGistConfirmOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={async () => {
+                    try {
+                      await deleteRemoteGist();
+                      await queryClient.invalidateQueries({
+                        queryKey: ["idea.dump.ideas"],
+                      });
+                      toast({
+                        title: "Remote Gist deleted",
+                        description:
+                          "The linked GitHub Gist has been deleted. Local data is unchanged.",
+                      });
+                    } catch (error: any) {
+                      toast({
+                        title: "Delete failed",
+                        description:
+                          error?.message ??
+                          "Failed to delete the linked GitHub Gist.",
+                        variant: "destructive",
+                      });
+                    } finally {
+                      setIsDeleteGistConfirmOpen(false);
+                    }
+                  }}
+                >
+                  Delete Remote Gist
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog
+            open={isGistConflictOpen}
+            onOpenChange={setIsGistConflictOpen}
+          >
+            <DialogContent className="bg-background/95 backdrop-blur-xl border-border/50 max-w-lg">
+              <DialogHeader>
+                <DialogTitle>Remote gist has different contents</DialogTitle>
+                <DialogDescription>
+                  The selected Gist contains different ideas/groups than your
+                  current app state. Do you want to keep your version or replace it
+                  with the remote version?
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter className="flex flex-col items-stretch gap-2 sm:flex-row sm:justify-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleResolveConflictUseRemote}
+                >
+                  Use Remote Version
+                </Button>
+                <Button
+                  type="button"
+                  variant="default"
+                  onClick={handleResolveConflictKeepLocal}
+                >
+                  Keep My Version (Overwrite Remote)
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog
+            open={isImportConfirmOpen}
+            onOpenChange={setIsImportConfirmOpen}
+          >
+            <DialogContent className="bg-background/95 backdrop-blur-xl border-border/50 max-w-md">
+              <DialogHeader>
+                <DialogTitle>Import JSON backup?</DialogTitle>
+                <DialogDescription>
+                  This will replace all your current ideas and groups with the
+                  contents of the imported file. This cannot be undone.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsImportConfirmOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={handleConfirmImport}
+                >
+                  Replace Data
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
           <Dialog open={isGroupDialogOpen} onOpenChange={setIsGroupDialogOpen}>
             <DialogTrigger asChild>
               <button className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-border/40 hover:border-white/60 hover:text-foreground transition-colors">

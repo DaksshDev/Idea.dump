@@ -8,6 +8,7 @@ const STORAGE_KEY = "idea.dump.ideas";
 const GIST_ID_KEY = "idea.dump.gist.id";
 const GIST_FILE_NAME = "ideas.json";
 const GITHUB_TOKEN_SESSION_KEY = "idea.dump.github.accessToken";
+const AUTOSAVE_KEY = "idea.dump.autosave";
 
 type IdeaInput = {
   content: string;
@@ -109,6 +110,18 @@ function saveIdeaDumpData(data: IdeaDumpData) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 }
 
+export function getAutosaveEnabled(): boolean {
+  if (typeof window === "undefined") return true;
+  const value = window.localStorage.getItem(AUTOSAVE_KEY);
+  if (value === null) return true;
+  return value === "1" || value === "true";
+}
+
+export function setAutosaveEnabled(enabled: boolean) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(AUTOSAVE_KEY, enabled ? "1" : "0");
+}
+
 let inMemoryGitHubToken: string | null = null;
 
 function clearGitHubToken() {
@@ -197,13 +210,13 @@ async function createOrUpdateGist(
     if (res.status === 404 && gistId) {
       window.localStorage.removeItem(GIST_ID_KEY);
       throw new Error(
-        "GitHub Gist not found. It may have been deleted on GitHub. Your local ideas are safe - you can recreate a new gist from local ideas or continue without one."
+        "GitHub Gist not found. It may have been deleted on GitHub. Your local ideas are safe - you can recreate a new gist from local ideas or continue without one.",
       );
     }
     if (res.status === 401 || res.status === 403) {
       clearGitHubToken();
       throw new Error(
-        "GitHub access was revoked or expired. Please sign in again to sync with Gist."
+        "GitHub access was revoked or expired. Please sign in again to sync with Gist.",
       );
     }
     throw new Error("Failed to save to GitHub Gist. Please try again.");
@@ -262,8 +275,228 @@ async function loadIdeasFromGistIfLinked(): Promise<IdeaDumpData | null> {
   }
 }
 
+export interface GitHubGistSummary {
+  id: string;
+  description: string | null;
+  public: boolean;
+  htmlUrl: string;
+  updatedAt: string;
+}
+
+export async function fetchGitHubGists(): Promise<GitHubGistSummary[]> {
+  if (typeof window === "undefined") return [];
+  const token = await getGitHubAccessToken({ interactive: true });
+  if (!token) {
+    throw new Error("GitHub auth required");
+  }
+
+  const res = await fetch("https://api.github.com/gists", {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+    },
+  });
+
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      clearGitHubToken();
+      throw new Error(
+        "GitHub access was revoked or expired. Please sign in again.",
+      );
+    }
+    throw new Error("Failed to load your GitHub gists. Please try again.");
+  }
+
+  const json = (await res.json()) as Array<{
+    id: string;
+    description: string | null;
+    public: boolean;
+    html_url: string;
+    updated_at: string;
+  }>;
+
+  return json.map((gist) => ({
+    id: gist.id,
+    description: gist.description,
+    public: gist.public,
+    htmlUrl: gist.html_url,
+    updatedAt: gist.updated_at,
+  }));
+}
+
+export function linkGist(id: string) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(GIST_ID_KEY, id);
+}
+
+export function unlinkGist() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(GIST_ID_KEY);
+}
+
+export function getLinkedGistId(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(GIST_ID_KEY);
+}
+
+export async function fetchGistDataById(
+  id: string,
+  { interactive }: { interactive: boolean },
+): Promise<IdeaDumpData> {
+  if (typeof window === "undefined") return { ideas: [], groups: [] };
+
+  const token = await getGitHubAccessToken({ interactive });
+  if (!token) {
+    throw new Error("GitHub auth required");
+  }
+
+  const res = await fetch(`https://api.github.com/gists/${id}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+    },
+  });
+
+  if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error("GitHub Gist not found.");
+    }
+    if (res.status === 401 || res.status === 403) {
+      clearGitHubToken();
+      throw new Error(
+        "GitHub access was revoked or expired. Please sign in again.",
+      );
+    }
+    throw new Error("Failed to load from GitHub Gist. Please try again.");
+  }
+
+  const json = (await res.json()) as {
+    files?: Record<
+      string,
+      {
+        content?: string;
+      }
+    >;
+  };
+
+  const file = json.files?.[GIST_FILE_NAME];
+  if (!file?.content) {
+    throw new Error("No ideas file (ideas.json) found in that Gist.");
+  }
+
+  try {
+    const parsed = JSON.parse(file.content) as StoredData;
+    return normalizeData(parsed);
+  } catch {
+    throw new Error("Gist ideas.json is not valid JSON.");
+  }
+}
+
+export function resetAppData() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(STORAGE_KEY);
+  window.localStorage.removeItem(GIST_ID_KEY);
+  window.localStorage.removeItem(AUTOSAVE_KEY);
+  clearGitHubToken();
+}
+
+export async function deleteRemoteGist(): Promise<void> {
+  if (typeof window === "undefined") return;
+  const gistId = window.localStorage.getItem(GIST_ID_KEY);
+  if (!gistId) {
+    throw new Error("No gist linked.");
+  }
+
+  const token = await getGitHubAccessToken({ interactive: true });
+  if (!token) {
+    throw new Error("GitHub auth required");
+  }
+
+  const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+    },
+  });
+
+  if (res.status === 404) {
+    window.localStorage.removeItem(GIST_ID_KEY);
+    return;
+  }
+  if (res.status === 401 || res.status === 403) {
+    clearGitHubToken();
+    throw new Error(
+      "GitHub access was revoked or expired. Please sign in again.",
+    );
+  }
+  if (!res.ok) {
+    throw new Error("Failed to delete GitHub Gist. Please try again.");
+  }
+
+  window.localStorage.removeItem(GIST_ID_KEY);
+}
+
+export function parseImportedIdeaDump(json: string): IdeaDumpData {
+  let raw: StoredData;
+  try {
+    raw = JSON.parse(json) as StoredData;
+  } catch {
+    throw new Error("Invalid JSON file. Could not parse.");
+  }
+  return normalizeData(raw);
+}
+
+export async function replaceAllData(data: IdeaDumpData): Promise<void> {
+  saveIdeaDumpData(data);
+  if (
+    !getAutosaveEnabled() ||
+    typeof window === "undefined" ||
+    !window.localStorage.getItem(GIST_ID_KEY)
+  ) {
+    return;
+  }
+
+  await createOrUpdateGist(data, { interactive: true });
+}
+
 function saveAndSyncLocal(data: IdeaDumpData) {
   saveIdeaDumpData(data);
+}
+
+async function syncToGistIfEnabled(
+  data: IdeaDumpData,
+  toast: (opts: {
+    title: string;
+    description?: string;
+    variant?: "default" | "destructive";
+  }) => void,
+  { interactive }: { interactive: boolean },
+) {
+  if (!getAutosaveEnabled() || typeof window === "undefined") return;
+
+  const gistId = window.localStorage.getItem(GIST_ID_KEY);
+  if (!gistId) {
+    // No linked gist → keep everything local, no errors.
+    return;
+  }
+
+  try {
+    const id = await createOrUpdateGist(data, { interactive });
+    if (id) {
+      toast({
+        title: "Autosaved changes",
+        description: "Changes synced to your GitHub Gist.",
+      });
+    }
+  } catch (error: any) {
+    toast({
+      title: "Autosave failed",
+      description:
+        error?.message ?? "Failed to sync your changes to GitHub Gist.",
+      variant: "destructive",
+    });
+  }
 }
 
 export function useIdeas() {
@@ -304,11 +537,7 @@ export function useCreateIdea() {
         ideas: [newIdea, ...state.ideas],
       };
       saveAndSyncLocal(updated);
-      try {
-        await createOrUpdateGist(updated, { interactive: false });
-      } catch {
-        // noop
-      }
+      await syncToGistIfEnabled(updated, toast, { interactive: false });
       return newIdea;
     },
     onSuccess: () => {
@@ -344,11 +573,7 @@ export function useDeleteIdea() {
         })),
       };
       saveAndSyncLocal(updated);
-      try {
-        await createOrUpdateGist(updated, { interactive: false });
-      } catch {
-        // noop
-      }
+      await syncToGistIfEnabled(updated, toast, { interactive: false });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [STORAGE_KEY] });
@@ -398,11 +623,7 @@ export function useUpdateIdea() {
         ideas,
       };
       saveAndSyncLocal(updated);
-      try {
-        await createOrUpdateGist(updated, { interactive: false });
-      } catch {
-        // noop
-      }
+      await syncToGistIfEnabled(updated, toast, { interactive: false });
       return updatedIdea;
     },
     onSuccess: () => {
@@ -446,11 +667,7 @@ export function useCreateGroup() {
         groups: [...state.groups, newGroup],
       };
       saveAndSyncLocal(updated);
-      try {
-        await createOrUpdateGist(updated, { interactive: false });
-      } catch {
-        // noop
-      }
+      await syncToGistIfEnabled(updated, toast, { interactive: false });
       return newGroup;
     },
     onSuccess: () => {
@@ -483,11 +700,7 @@ export function useDeleteGroup() {
         groups: state.groups.filter((group) => group.id !== groupId),
       };
       saveAndSyncLocal(updated);
-      try {
-        await createOrUpdateGist(updated, { interactive: false });
-      } catch {
-        // noop
-      }
+      await syncToGistIfEnabled(updated, toast, { interactive: false });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [STORAGE_KEY] });
@@ -530,11 +743,7 @@ export function useRenameGroup() {
         groups,
       };
       saveAndSyncLocal(updated);
-      try {
-        await createOrUpdateGist(updated, { interactive: false });
-      } catch {
-        // noop
-      }
+      await syncToGistIfEnabled(updated, toast, { interactive: false });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [STORAGE_KEY] });
@@ -589,11 +798,7 @@ export function useMoveIdeaToGroup() {
         groups,
       };
       saveAndSyncLocal(updated);
-      try {
-        await createOrUpdateGist(updated, { interactive: false });
-      } catch {
-        // noop
-      }
+      await syncToGistIfEnabled(updated, toast, { interactive: false });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [STORAGE_KEY] });
@@ -643,7 +848,9 @@ export function useGistSync() {
           ? window.localStorage.getItem(GIST_ID_KEY)
           : null;
       if (!gistId) {
-        throw new Error("No gist linked yet. Click \"Save to GitHub Gist\" first.");
+        throw new Error(
+          'No gist linked yet. Click "Save to GitHub Gist" first.',
+        );
       }
 
       const token = await getGitHubAccessToken({ interactive: true });
@@ -662,13 +869,13 @@ export function useGistSync() {
         if (res.status === 404) {
           window.localStorage.removeItem(GIST_ID_KEY);
           throw new Error(
-            "GitHub Gist not found. It may have been deleted on GitHub.\n\nYou can recreate a new gist from your local ideas by clicking \"Save to GitHub Gist\", or continue without using a gist."
+            'GitHub Gist not found. It may have been deleted on GitHub.\n\nYou can recreate a new gist from your local ideas by clicking "Save to GitHub Gist", or continue without using a gist.',
           );
         }
         if (res.status === 401 || res.status === 403) {
           clearGitHubToken();
           throw new Error(
-            "GitHub access was revoked or expired. Please sign in again and retry."
+            "GitHub access was revoked or expired. Please sign in again and retry.",
           );
         }
         throw new Error("Failed to load from GitHub Gist. Please try again.");
@@ -720,3 +927,4 @@ export function useGistSync() {
     isLoadingFromGist: loadMutation.isPending,
   };
 }
+

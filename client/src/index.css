@@ -27,7 +27,7 @@
   --accent: 0 0% 20%;
   --accent-foreground: 0 0% 100%;
   
-  --destructive: 0 0% 30%;      /* Subtle destructive */
+  --destructive: 0 90% 70%;
   --destructive-foreground: 0 0% 100%;
 
   --border: 0 0% 20%;          /* #333333 */
