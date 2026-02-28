@@ -106,6 +106,10 @@ export default function Home() {
   const [isImportConfirmOpen, setIsImportConfirmOpen] = useState(false);
   const [pendingImportData, setPendingImportData] =
     useState<IdeaDumpData | null>(null);
+  const [resetConfirmText, setResetConfirmText] = useState("");
+  const [deleteGistConfirmText, setDeleteGistConfirmText] = useState("");
+  const [createGistDeleteConfirmText, setCreateGistDeleteConfirmText] =
+    useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -828,7 +832,10 @@ export default function Home() {
 
           <Dialog
             open={isCreateGistDeleteConfirmOpen}
-            onOpenChange={setIsCreateGistDeleteConfirmOpen}
+            onOpenChange={(open) => {
+              setIsCreateGistDeleteConfirmOpen(open);
+              if (!open) setCreateGistDeleteConfirmText("");
+            }}
           >
             <DialogContent className="bg-background/95 backdrop-blur-xl border-border/50 max-w-md">
               <DialogHeader>
@@ -839,6 +846,19 @@ export default function Home() {
                   be undone.
                 </DialogDescription>
               </DialogHeader>
+              <div className="space-y-3 py-2">
+                <p className="text-xs text-muted-foreground/80">
+                  To confirm, type <span className="font-mono">Delete</span> in the
+                  box below. This cannot be undone.
+                </p>
+                <Input
+                  value={createGistDeleteConfirmText}
+                  onChange={(event) =>
+                    setCreateGistDeleteConfirmText(event.target.value)
+                  }
+                  placeholder="Type Delete to confirm"
+                />
+              </div>
               <DialogFooter>
                 <Button
                   type="button"
@@ -850,7 +870,7 @@ export default function Home() {
                 <Button
                   type="button"
                   variant="destructive"
-                  disabled={isSavingToGist}
+                  disabled={isSavingToGist || createGistDeleteConfirmText !== "Delete"}
                   onClick={async () => {
                     try {
                       await deleteRemoteGist();
@@ -870,6 +890,7 @@ export default function Home() {
                         variant: "destructive",
                       });
                     } finally {
+                      setCreateGistDeleteConfirmText("");
                       setIsCreateGistDeleteConfirmOpen(false);
                     }
                   }}
@@ -880,7 +901,13 @@ export default function Home() {
             </DialogContent>
           </Dialog>
 
-          <Dialog open={isResetConfirmOpen} onOpenChange={setIsResetConfirmOpen}>
+          <Dialog
+            open={isResetConfirmOpen}
+            onOpenChange={(open) => {
+              setIsResetConfirmOpen(open);
+              if (!open) setResetConfirmText("");
+            }}
+          >
             <DialogContent className="bg-background/95 backdrop-blur-xl border-border/50 max-w-md">
               <DialogHeader>
                 <DialogTitle>Reset app completely?</DialogTitle>
@@ -889,6 +916,17 @@ export default function Home() {
                   Gist. Your remote Gist (if any) will not be touched.
                 </DialogDescription>
               </DialogHeader>
+              <div className="space-y-3 py-2">
+                <p className="text-xs text-muted-foreground/80">
+                  To confirm, type <span className="font-mono">Delete</span> in the
+                  box below. This cannot be undone.
+                </p>
+                <Input
+                  value={resetConfirmText}
+                  onChange={(event) => setResetConfirmText(event.target.value)}
+                  placeholder="Type Delete to confirm"
+                />
+              </div>
               <DialogFooter>
                 <Button
                   type="button"
@@ -900,12 +938,14 @@ export default function Home() {
                 <Button
                   type="button"
                   variant="destructive"
+                  disabled={resetConfirmText !== "Delete"}
                   onClick={async () => {
                     resetAppData();
                     await queryClient.invalidateQueries({
                       queryKey: ["idea.dump.ideas"],
                     });
                     setIsResetConfirmOpen(false);
+                    setResetConfirmText("");
                     toast({
                       title: "App reset",
                       description:
@@ -921,7 +961,10 @@ export default function Home() {
 
           <Dialog
             open={isDeleteGistConfirmOpen}
-            onOpenChange={setIsDeleteGistConfirmOpen}
+            onOpenChange={(open) => {
+              setIsDeleteGistConfirmOpen(open);
+              if (!open) setDeleteGistConfirmText("");
+            }}
           >
             <DialogContent className="bg-background/95 backdrop-blur-xl border-border/50 max-w-md">
               <DialogHeader>
@@ -931,6 +974,19 @@ export default function Home() {
                   account. Your local ideas will remain intact.
                 </DialogDescription>
               </DialogHeader>
+              <div className="space-y-3 py-2">
+                <p className="text-xs text-muted-foreground/80">
+                  To confirm, type <span className="font-mono">Delete</span> in the
+                  box below. This cannot be undone.
+                </p>
+                <Input
+                  value={deleteGistConfirmText}
+                  onChange={(event) =>
+                    setDeleteGistConfirmText(event.target.value)
+                  }
+                  placeholder="Type Delete to confirm"
+                />
+              </div>
               <DialogFooter>
                 <Button
                   type="button"
@@ -942,6 +998,7 @@ export default function Home() {
                 <Button
                   type="button"
                   variant="destructive"
+                  disabled={deleteGistConfirmText !== "Delete"}
                   onClick={async () => {
                     try {
                       await deleteRemoteGist();
@@ -962,6 +1019,7 @@ export default function Home() {
                         variant: "destructive",
                       });
                     } finally {
+                      setDeleteGistConfirmText("");
                       setIsDeleteGistConfirmOpen(false);
                     }
                   }}
